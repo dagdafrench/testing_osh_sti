@@ -1,0 +1,543 @@
+#!/bin/bash
+FIXED_APP_NAME=
+
+function set_app_file() {
+    if [ "$#" -eq 1 ]; then
+	APP_FILE_NAME=$1
+	APP_FILE="-p APP_FILE=$1"
+    else
+	APP_FILE_NAME=
+	APP_FILE=
+    fi
+}
+
+function set_exit_flag() {
+    if [ "$#" -eq 1 ]; then
+	EXIT_FLAG="-p APP_EXIT=$1"
+    else
+	EXIT_FLAG=
+    fi
+}
+
+function set_defaults() {
+    # EXTRA_PARAMS is for non-general, language-specific stuff
+    EXTRA_PARAMS=
+    TEST_MODE=false
+    APPARGS=
+    DEL_CLUSTER=false
+    NAMED_CONFIG=clusterconfig
+    DRIVER_CONFIG=
+    SPARK_OPTIONS=
+    GEN_CLUSTER_NAME=
+    APP_NAME=
+    RANDOM_NAME=false
+    set_app_file
+    set_exit_flag
+}
+
+function app_preamble() {
+    if [ -z "$FIXED_APP_NAME" -o "$RANDOM_NAME" == true ]; then
+        set +e
+        SUFFIX=$(date -Ins | md5sum | tr -dc 'a-z0-9' | fold -w 4 | head -n 1)
+        set -e
+        APP_NAME=app-$SUFFIX
+    else
+	APP_NAME=$FIXED_APP_NAME
+    fi
+    if [ "$GEN_CLUSTER_NAME" == "" ]; then
+        GEN_CLUSTER_NAME=testenv
+    fi
+    MASTER_DC=$GEN_CLUSTER_NAME-m
+    WORKER_DC=$GEN_CLUSTER_NAME-w
+}
+
+function set_fixed_app_name() {
+    if [ "$#" -eq 1 ]; then
+	FIXED_APP_NAME=$1
+    else
+	FIXED_APP_NAME=
+    fi
+}
+
+function force_random_app_name() {
+    RANDOM_NAME=true
+}
+
+function set_template() {
+    TEMPLATE=$1
+}
+
+function set_git_uri() {
+    if [ "$#" -eq 1 ]; then
+	GIT_URI=$1
+	SOURCE_INFO="-p GIT_URI=$1" 
+    elif [ "$#" -eq 2 ]; then
+	GIT_URI=$1
+	SOURCE_INFO="-p GIT_URI=$1 -p GIT_REF=$2"
+    else
+	GIT_URI=
+	SOURCE_INFO=
+    fi
+}
+
+function set_image() {
+    if [ "$#" -eq 1 ]; then
+	SOURCE_INFO="-p IMAGE=$1"
+    else
+	SOURCE_INFO=
+    fi
+}
+
+APP_MAIN_CLASS=
+function set_app_main_class() {
+    if [ "$#" -eq 1 ]; then
+	APP_MAIN_CLASS="-p APP_MAIN_CLASS=$1"
+    else
+	APP_MAIN_CLASS=
+    fi
+}
+
+function run_app() {
+    app_preamble
+    set +e
+    # If is a build is necessary, it can take a long time and this can cause tests in
+    # environments like travis to time out from lack of output.  So if the imagestream
+    # associated with APP_NAME doesn't already exist, watch the build log to produce log
+    # output and prevent timeout.
+    oc get is $APP_NAME &> /dev/null
+    local stream_exists=$?
+    oc new-app --file=$TEMPLATE $SOURCE_INFO -p APPLICATION_NAME=$APP_NAME -p APP_ARGS="$APPARGS" -p OSHINKO_DEL_CLUSTER=$DEL_CLUSTER -p OSHINKO_NAMED_CONFIG=$NAMED_CONFIG -p OSHINKO_SPARK_DRIVER_CONFIG=$DRIVER_CONFIG -p OSHINKO_CLUSTER_NAME=$GEN_CLUSTER_NAME -p SPARK_OPTIONS="$SPARK_OPTIONS" $APP_FILE $EXIT_FLAG $APP_MAIN_CLASS $EXTRA_PARAMS
+    set -e
+    # Allow some tests to skip the wait for the running app, because they don't care
+    if [ "$#" -eq 0 ]; then
+	if [ "$stream_exists" -ne 0 ]; then
+            poll_build
+	    local res=$?
+	    if [ "$res" -ne 0 ]; then
+	        return $res
+	    fi
+	fi
+	get_driver_pod
+    fi
+}
+
+function run_app_without_optionals() {
+    app_preamble
+    set +e
+    oc get is $APP_NAME &> /dev/null
+    local stream_exists=$?
+    oc new-app --file=$TEMPLATE $SOURCE_INFO -p APPLICATION_NAME=$APP_NAME -p OSHINKO_CLUSTER_NAME=$GEN_CLUSTER_NAME $APP_MAIN_CLASS &> /dev/null
+    set -e
+    if [ "$stream_exists" -ne 0 ]; then
+        poll_build
+	local res=$?
+	if [ "$res" -ne 0 ]; then
+	    return $res
+	fi
+    fi
+    get_driver_pod
+}
+
+function run_app_without_clustername() {
+    app_preamble
+    set +e
+    oc get is $APP_NAME &> /dev/null
+    local stream_exists=$?
+    oc new-app --file=$TEMPLATE $SOURCE_INFO -p APPLICATION_NAME=$APP_NAME $APP_MAIN_CLASS &> /dev/null
+    set -e
+    if [ "$stream_exists" -ne 0 ]; then
+        poll_build
+	local res=$?
+	if [ "$res" -ne 0 ]; then
+	    return $res
+	fi
+    fi
+    get_driver_pod
+}
+
+function run_app_without_application_name() {
+    app_preamble
+    oc new-app --file=$TEMPLATE $SOURCE_INFO $APP_MAIN_CLASS
+}
+
+function get_driver_pod() {
+    # os::cmd::try_until_success 'oc get pod -l deploymentconfig="$APP_NAME" --template="{{index .items 0 \"metadata\" \"name\"}}"'
+    local count
+    count=0
+
+    set +e
+    while true; do
+        DRIVER=$(oc get pod -l deploymentconfig=$APP_NAME --template='{{index .items 0 "metadata" "name"}}')
+        if [ "$?" -eq 0 ]; then
+            break
+        fi
+        echo Getting driver pod for $APP_NAME failed, trying again
+        oc get pods
+        sleep 0.5
+        count=$((count + 1))
+        echo $count
+        if [ "$count" -eq 120 ]; then
+            return 1
+        fi
+    done
+    set -e
+}
+
+function scrape_for_env() {
+    local PODNAME=$1
+    local ENVNAME=$2
+    if [ "$#" -eq 3 ]; then
+        local VALUE=$3
+        local SCRAPE='oc export pod '$PODNAME' | grep -A 1 "name: '$ENVNAME'" | grep "value: '$VALUE'"'
+        os::cmd::try_until_success "$SCRAPE"
+    else
+        local SCRAPE='oc export pod '$PODNAME' | grep "name: '$ENVNAME'"'
+        os::cmd::try_until_success "$SCRAPE"
+        SCRAPE='oc export pod '$PODNAME' | grep -A 1 "name: '$ENVNAME'" | grep "value:"'
+        os::cmd::try_until_failure "$SCRAPE"
+    fi
+}
+
+function scrape_build_for_env() {
+    local PODNAME=$1
+    local ENVNAME=$2
+    if [ "$#" -eq 3 ]; then
+        local VALUE=$3
+        local SCRAPE='oc export build '$PODNAME' | grep -A 1 "name: '$ENVNAME'" | grep "value: '$VALUE'"'
+        os::cmd::try_until_success "$SCRAPE"
+    else
+        local SCRAPE='oc export build '$PODNAME' | grep "name: '$ENVNAME'"'
+        os::cmd::try_until_success "$SCRAPE"
+        SCRAPE='oc export build '$PODNAME' | grep -A 1 "name: '$ENVNAME'" | grep "value:"'
+        os::cmd::try_until_failure "$SCRAPE"
+    fi
+}
+
+function test_no_app_name {
+    set_defaults
+    os::cmd::expect_success 'oc delete buildconfig --all'
+    os::cmd::try_until_text 'oc get buildconfig' 'No resources found'
+    run_app_without_application_name
+    os::cmd::try_until_not_text 'oc get buildconfig' 'No resources found' $((10*minute))
+    NAME=$(oc get buildconfig --template='{{index .items 0 "metadata" "name"}}')
+    scrape_for_env $NAME-1-build SOURCE_REPOSITORY $GIT_URI
+    os::cmd::try_until_success 'oc get dc/"$NAME"'
+    os::cmd::try_until_success 'oc get is/"$NAME"'
+    os::cmd::expect_success 'oc delete buildconfig "$NAME"'
+    os::cmd::expect_success 'oc delete is "$NAME"'
+    os::cmd::expect_success 'oc delete dc "$NAME"'
+}
+
+function test_app_args {
+    set_defaults
+    APPARGS="doodleydoodley"
+    run_app
+    scrape_for_env $DRIVER APP_ARGS doodleydoodley
+    cleanup_app $DRIVER
+
+    run_app_without_optionals
+    scrape_for_env $DRIVER APP_ARGS
+    cleanup_app $DRIVER
+}
+
+function test_podinfo {
+    set_defaults
+    run_app
+    os::cmd::try_until_success 'oc exec "$DRIVER" -- ls /etc/podinfo/labels'
+    os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep POD_NAME="$DRIVER"'  $((5*minute))
+    cleanup_app $DRIVER
+}
+
+function test_del_cluster {
+    set_defaults
+    run_app
+    scrape_for_env $DRIVER OSHINKO_DEL_CLUSTER '\"false\"'
+    cleanup_app $DRIVER
+
+    DEL_CLUSTER=true
+    run_app
+    scrape_for_env $DRIVER OSHINKO_DEL_CLUSTER '\"true\"'
+    cleanup_app $DRIVER
+
+    run_app_without_optionals
+    scrape_for_env $DRIVER OSHINKO_DEL_CLUSTER '\"true\"'
+    cleanup_app $DRIVER
+}
+
+function test_cluster_name {
+    set_defaults
+    DEL_CLUSTER=true
+    GEN_CLUSTER_NAME=jerry
+    run_app
+    scrape_for_env $DRIVER OSHINKO_CLUSTER_NAME jerry
+
+    cleanup_app $DRIVER
+
+    run_app_without_clustername
+    scrape_for_env $DRIVER OSHINKO_CLUSTER_NAME
+    cleanup_app $DRIVER
+}
+
+function test_no_source_or_image {
+    set_defaults
+    app_preamble
+    os::cmd::expect_failure 'oc new-app --file="$TEMPLATE"'
+}
+
+function test_named_config {
+    set_defaults
+    NAMED_CONFIG=myconfig
+    run_app
+    scrape_for_env $DRIVER OSHINKO_NAMED_CONFIG myconfig
+    cleanup_app $DRIVER
+
+    run_app_without_optionals
+    scrape_for_env $DRIVER OSHINKO_NAMED_CONFIG
+    cleanup_app $DRIVER
+}
+
+function test_app_file {
+    # Look in the default app for the app_file value unset
+    set_defaults
+    run_app
+    os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep APP_FILE=$' $((10*minute))
+    cleanup_app $DRIVER
+
+    # Because the dc is bundled with a buildconfig, this will cause a new build. Force a different
+    # app name so that the build doesn't conflict and we can keep the default one around.
+    force_random_app_name
+    set_app_file $1
+    run_app
+    os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep APP_FILE="$APP_FILE_NAME"$' $((10*minute))
+    cleanup_app $DRIVER
+    oc delete buildconfig $APP_NAME &> /dev/null
+    oc delete is $APP_NAME &> /dev/null
+}
+
+function test_git_ref {
+    local old_source=$SOURCE_INFO
+    local commit=$2 # commit value has to be named for os::cmd to do the substitution
+    set_defaults
+
+    # We want a new build to reference the git_ref but we don't want to delete the old build, so
+    # force a new app name
+    force_random_app_name
+    set_git_uri $1 $commit
+    run_app skipwait
+    SOURCE_INFO=$old_source
+    os::cmd::try_until_success 'oc export build "$APP_NAME"-1 | grep -e commit\:\ "$commit"'
+    cleanup_app
+    os::cmd::expect_success 'oc delete buildconfig "$APP_NAME"'
+    os::cmd::expect_success 'oc delete is "$APP_NAME"'
+}
+
+function test_driver_config {
+    set_defaults
+    DRIVER_CONFIG=myconfig
+    run_app
+    scrape_for_env $DRIVER OSHINKO_SPARK_DRIVER_CONFIG myconfig
+    cleanup_app $DRIVER
+
+    run_app_without_optionals
+    scrape_for_env $DRIVER OSHINKO_SPARK_DRIVER_CONFIG
+    cleanup_app $DRIVER
+}
+
+function test_spark_options {
+    set_defaults
+    SPARK_OPTIONS="--conf somevalue=1"
+    run_app
+    scrape_for_env $DRIVER SPARK_OPTIONS "$SPARK_OPTIONS"
+    cleanup_app $DRIVER
+
+    run_app_without_optionals
+    scrape_for_env $DRIVER SPARK_OPTIONS
+    cleanup_app $DRIVER
+}
+
+function test_exit {
+    set_defaults
+    run_app
+    scrape_for_env $DRIVER APP_EXIT '\"false\"'
+    cleanup_app $DRIVER
+
+    set_exit_flag true
+    run_app
+    scrape_for_env $DRIVER APP_EXIT '\"true\"'
+    cleanup_app $DRIVER
+
+    set_exit_flag false
+    run_app
+    scrape_for_env $DRIVER APP_EXIT '\"false\"'
+    cleanup_app $DRIVER
+}
+
+function test_fixed_exit {
+    set_defaults
+    run_app
+    scrape_for_env $DRIVER APP_EXIT '\"true\"'
+    cleanup_app $DRIVER
+}
+
+function test_driver_host {
+    set_defaults
+    run_app
+    scrape_for_env $DRIVER DRIVER_HOST "$APP_NAME"-headless
+    cleanup_app $DRIVER
+}
+
+function test_sbt_args {
+    set_defaults
+    EXTRA_PARAMS="-p SBT_ARGS=mycommand"
+    # We want a new build since we're changing the arguments
+    force_random_app_name
+    run_app skipwait
+    scrape_build_for_env $APP_NAME-1 SBT_ARGS mycommand
+    os::cmd::try_until_text 'oc log buildconfig/"$APP_NAME"' 'sbt .* mycommand'
+
+    cleanup_app
+    os::cmd::expect_success 'oc delete buildconfig "$APP_NAME"'
+    os::cmd::expect_success 'oc delete is "$APP_NAME"'
+}
+
+function test_sbt_args_append {
+    set_defaults
+    EXTRA_PARAMS="-p SBT_ARGS_APPEND=myargs"
+    # We want a new build since we're changing the arguments
+    force_random_app_name
+    run_app skipwait
+    scrape_build_for_env $APP_NAME-1 SBT_ARGS_APPEND myargs
+    os::cmd::try_until_text 'oc log buildconfig/"$APP_NAME"' 'sbt .* package myargs'
+
+    cleanup_app
+    os::cmd::expect_success 'oc delete buildconfig "$APP_NAME"'
+    os::cmd::expect_success 'oc delete is "$APP_NAME"'
+}
+
+function test_context_dir {
+    set_defaults
+    EXTRA_PARAMS="-p CONTEXT_DIR=mycontext"
+    # We want a new build since we're changing the arguments
+    force_random_app_name
+    run_app skipwait
+
+    os::cmd::try_until_text 'oc export buildconfig "$APP_NAME"' 'contextDir: mycontext'
+    cleanup_app
+    os::cmd::expect_success 'oc delete buildconfig "$APP_NAME"'
+    os::cmd::expect_success 'oc delete is "$APP_NAME"'
+}
+
+function fix_template() {
+    local file=$1
+    local original_image=$2
+    local new_image=$3
+
+    local user=
+    local password=
+    local pushproj=
+    local pushimage=
+    local registry=
+    local imagestream=
+
+    # If the integrated registry is defined, then we have to do a push of the local image
+    # into the project and modify the template to use an ImageStreamTag
+    if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+        if [ -n  "$S2I_TEST_EXTERNAL_REGISTRY" ]; then
+	    user=$S2I_TEST_EXTERNAL_USER
+	    password=$S2I_TEST_EXTERNAL_PASSWORD
+	    pushproj=$user
+	    pushimage=scratch-$new_image
+	    registry=$S2I_TEST_EXTERNAL_REGISTRY
+	    imagestream=false
+        elif [ -n "$S2I_TEST_INTEGRATED_REGISTRY" ]; then
+	    user=$(oc whoami)
+	    password=$(oc whoami -t)
+	    pushproj=$PROJECT
+	    pushimage=$new_image
+	    registry=$S2I_TEST_INTEGRATED_REGISTRY
+	    imagestream=true
+        fi
+    fi
+
+    if [ -n "$registry" ]; then
+        set +e
+        docker login --help | grep email &> /dev/null
+        local res=$?
+        set -e
+        if [ "$res" -eq 0 ]; then
+            docker login -u $user -e jack@jack.com -p $password $registry
+        else
+            docker login -u $user -p $password $registry
+        fi
+        docker tag ${new_image} ${registry}/${pushproj}/${pushimage}
+        docker push ${registry}/${pushproj}/${pushimage}
+        if [ "$imagestream" == true ]; then
+            sed -i "s^\"kind\": \"DockerImage\"^\"kind\": \"ImageStreamTag\"^" $file
+            # if there is already a tag in the name, don't add latest
+            if [[ "$pushimage" == *:* ]]; then 
+                sed -i "s^\"name\": \"$original_image\"^\"name\": \"$pushimage\"^" $file
+            else
+                sed -i "s^\"name\": \"$original_image\"^\"name\": \"$pushimage:latest\"^" $file
+            fi
+        else
+            sed -i "s^\"name\": \"$original_image\"^\"name\": \"$pushproj/$pushimage\"^" $file
+        fi
+    else
+	# Still have to update the template, but we don't have to do a push
+        sed -i "s^\"name\": \"$original_image\"^\"name\": \"$new_image\"^" $file
+	if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+	    # If we're running with local images and there is no registry set, then
+	    # we have to be using oc cluster up and referencing images on the local
+	    # docker host. In this case we have to remove forcePull to prevent the
+	    # build from breaking and let openshift just reference the local image
+            sed -i "s^\"forcePull\".*^^" $file
+	fi
+    fi
+}
+
+function check_image {
+    local testimage=$1
+    set_defaults
+    force_random_app_name
+    run_app skip_wait
+    os::cmd::try_until_success 'oc get buildconfig "$APP_NAME"' $((10*minute))
+    IMAGE=$(oc get buildconfig $APP_NAME --template='{{index .spec "strategy" "sourceStrategy" "from" "name"}}')
+    KIND=$(oc get buildconfig $APP_NAME --template='{{index .spec "strategy" "sourceStrategy" "from" "kind"}}')
+
+    local pushproj=
+    local pushimage=
+    local registry=
+    local imagestream=
+
+    # If the integrated registry is defined, then we have to do a push of the local image
+    # into the project and modify the template to use an ImageStreamTag
+    if [ -n  "$S2I_TEST_EXTERNAL_REGISTRY" ]; then
+	imagestream=false
+	registry=true
+	testimage=$S2I_TEST_EXTERNAL_USER/scratch-$testimage
+    elif [ -n "$S2I_TEST_INTEGRATED_REGISTRY" ]; then
+	imagestream=true
+	registry=true
+    fi
+
+    if [ "$registry" == true ]; then
+        # strip the tags from both images in the case of the integrated registry
+        # because we're not sure what we'll have.
+        v1=$(echo "$IMAGE" | sed -r -e "s@([^:]*)(:.*)@\1@")
+        v2=$(echo "$testimage" | sed -r -e "s@([^:]*)(:.*)@\1@")
+        echo $v1
+        echo $v2
+        os::cmd::expect_success '[ "$v1" == "$v2" ]'
+        if [ "$imagestream" == true ]; then
+            os::cmd::expect_success '[ "$KIND" == "ImageStreamTag" ]'
+        fi
+    else
+        os::cmd::expect_success '[ "$IMAGE" == "$testimage" ]'
+        os::cmd::expect_success '[ "$KIND" == "DockerImage" ]'
+    fi
+    oc delete buildconfig $APP_NAME &> /dev/null
+    oc delete is $APP_NAME &> /dev/null
+    set +e
+    oc delete dc $APP_NAME &> /dev/null
+    set -e
+}

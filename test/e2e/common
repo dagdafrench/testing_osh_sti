@@ -1,0 +1,392 @@
+#!/bin/bash
+S2I_TEST_LOCAL_IMAGES=${S2I_TEST_LOCAL_IMAGES:-true}
+S2I_TEST_INTEGRATED_REGISTRY=${S2I_TEST_INTEGRATED_REGISTRY:-}
+S2I_TEST_EXTERNAL_REGISTRY=${S2I_TEST_EXTERNAL_REGISTRY:-}
+S2I_TEST_EXTERNAL_USER=${S2I_TEST_EXTERNAL_USER:-}
+S2I_TEST_EXTERNAL_PASSWORD=${S2I_TEST_EXTERNAL_PASSWORD:-}
+
+if [ -z "$S2I_TEST_IMAGE_PYSPARK" ]; then
+    if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+	S2I_TEST_IMAGE_PYSPARK=radanalytics-pyspark
+    else
+	S2I_TEST_IMAGE_PYSPARK=docker.io/radanalyticsio/radanalytics-pyspark
+    fi
+fi
+
+if [ -z "$S2I_TEST_IMAGE_JAVA" ]; then
+    if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+	S2I_TEST_IMAGE_JAVA=radanalytics-java-spark
+    else
+	S2I_TEST_IMAGE_JAVA=docker.io/radanalyticsio/radanalytics-java-spark
+    fi
+fi
+
+if [ -z "$S2I_TEST_IMAGE_SCALA" ]; then
+    if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+	S2I_TEST_IMAGE_SCALA=radanalytics-scala-spark
+    else
+	S2I_TEST_IMAGE_SCALA=docker.io/radanalyticsio/radanalytics-scala-spark
+    fi
+fi
+
+S2I_TEST_SPARK_IMAGE=${S2I_TEST_SPARK_IMAGE:-docker.io/radanalyticsio/openshift-spark}
+
+S2I_TEST_WORKERS=${S2I_TEST_WORKERS:-1}
+
+PROJECT=$(oc project -q)
+MY_SCRIPT=`basename "$0"`
+
+# RESOURCE_DIR will be the directory containing this file
+RESOURCE_DIR=$(readlink -f `dirname "${BASH_SOURCE[0]}"`)/resources
+
+PYSPARK_DIR=$(readlink -f `dirname "${BASH_SOURCE[0]}"` | grep -o '.*/oshinko-s2i')/templates
+
+# We count on this file being somewhere below oshinko-s2i, and
+# the location of hack/lib under oshinko-s2i
+source $(readlink -f `dirname "${BASH_SOURCE[0]}"` | grep -o '.*/oshinko-s2i')/hack/lib/init.sh
+
+function print_test_env {
+    if [ "$S2I_TEST_LOCAL_IMAGES" != true ]; then
+	echo S2I_TEST_LOCAL_IMAGES = $S2I_TEST_LOCAL_IMAGES, all s2i builder images are external, ignoring registry env vars
+    elif [ -n "$S2I_TEST_EXTERNAL_REGISTRY" ]; then
+        echo Using external registry $S2I_TEST_EXTERNAL_REGISTRY
+        if [ -z "$S2I_TEST_EXTERNAL_USER" ]; then
+            echo "WARNING: S2I_TEST_EXTERNAL_USER not set!"
+        else
+	    echo Using external user $S2I_TEST_EXTERNAL_USER
+        fi
+        if [ -z "$S2I_TEST_EXTERNAL_PASSWORD" ]; then
+            echo "WARNING: S2I_TEST_EXTERNAL_PASSWORD not set!"
+        else
+            echo External password set
+        fi
+    elif [ -n "$S2I_TEST_INTEGRATED_REGISTRY" ]; then
+        echo Using integrated registry $S2I_TEST_INTEGRATED_REGISTRY
+    else
+        echo Not using external or integrated registry
+    fi
+    echo Using s2i pyspark image $S2I_TEST_IMAGE_PYSPARK
+    echo Using s2i java image $S2I_TEST_IMAGE_JAVA
+    echo Using s2i scala image $S2I_TEST_IMAGE_SCALA
+    echo Using spark image $S2I_TEST_SPARK_IMAGE
+    echo Using $S2I_TEST_WORKERS workers
+}
+
+function set_app_exit {
+    DO_EXIT="true"
+}
+
+function clear_app_exit() {
+    DO_EXIT="false"
+}
+
+function set_long_running {
+    DEL_CLUSTER="false"
+}
+
+function set_ephemeral() {
+    DEL_CLUSTER="true"
+}
+
+function set_spark_sleep() {
+    SLEEP=300
+}
+
+function clear_spark_sleep() {
+    SLEEP=0
+}
+
+function set_test_mode() {
+    # we want the signal handler to delay so that we can read the pod logs after the pod is deleted   
+    DO_TEST="true"
+}
+
+function clear_test_mode() {
+    DO_TEST="false"
+}
+
+function clear_cluster_name() {
+    GEN_CLUSTER_NAME=""
+}
+
+function set_driver_config() {
+    init_driver_config
+    DRIVER_CONFIG=driverconfig
+}
+
+function delete_driver_config() {
+    set +e
+    oc delete configmap driverconfig
+    set -e
+}
+
+function clear_driver_config() {
+    DRIVER_CONFIG=
+}
+
+function init_config_map() {
+    set +e
+    oc delete configmap clusterconfig masterconfig workerconfig &>/dev/null
+    set -e
+    oc create configmap masterconfig --from-file=$RESOURCE_DIR/masterconfig &>/dev/null
+    oc create configmap workerconfig --from-file=$RESOURCE_DIR/workerconfig &>/dev/null
+    oc create configmap clusterconfig --from-literal=workercount=$WORKER_COUNT \
+                                      --from-literal=sparkimage=$S2I_TEST_SPARK_IMAGE \
+                                      --from-literal=sparkmasterconfig=masterconfig \
+                                      --from-literal=sparkworkerconfig=workerconfig &>/dev/null
+}
+
+function init_driver_config() {
+    set +e
+    oc delete configmap driverconfig
+    set -e
+    oc create configmap driverconfig  --from-file=$RESOURCE_DIR/driverconfig
+}
+
+function set_worker_count() {
+    if [ "${WORKER_COUNT:-0}" -ne "$1" ]; then
+        WORKER_COUNT=$1
+        init_config_map
+    fi
+}
+
+function set_defaults() {
+    set_ephemeral
+    set_spark_sleep
+    clear_app_exit
+    clear_test_mode
+    clear_cluster_name
+    clear_driver_config
+}
+
+function run_app() {
+    # Launch the app using the service account and create a cluster
+    set +e
+    SUFFIX=$(date -Ins | md5sum | tr -dc 'a-z0-9' | fold -w 4 | head -n 1)
+    set -e
+    APP_NAME=app-$SUFFIX
+    if [ "$#" -ne 1 ]; then
+	echo run_app takes 1 parameter, true or false for named or unnamed cluster
+	return 1
+    fi
+    if [ "$1" != true ]; then
+        os::cmd::expect_success 'oc new-app --file="$PYSPARK_DIR"/pythondc.json -p IMAGE=play -p APPLICATION_NAME="$APP_NAME" -p APP_EXIT="$DO_EXIT" -p APP_ARGS="$SLEEP" -p OSHINKO_DEL_CLUSTER="$DEL_CLUSTER" -p OSHINKO_NAMED_CONFIG=clusterconfig -p OSHINKO_SPARK_DRIVER_CONFIG="$DRIVER_CONFIG" -e TEST_MODE="$DO_TEST"'
+
+        os::cmd::try_until_text 'oc logs dc/$APP_NAME' 'Using.*cluster' $((5*minute))
+        GEN_CLUSTER_NAME=$(oc logs dc/$APP_NAME | sed -rn "s@Using (shared|ephemeral) cluster (.*$)@\2@p")
+
+    else
+	# If the cluster name was not cleared, reuse it
+	if [ "$GEN_CLUSTER_NAME" == "" ]; then
+            GEN_CLUSTER_NAME=cl-$SUFFIX
+	fi
+        os::cmd::expect_success 'oc new-app --file="$PYSPARK_DIR"/pythondc.json -p IMAGE=play -p OSHINKO_CLUSTER_NAME="$GEN_CLUSTER_NAME" -p APPLICATION_NAME="$APP_NAME" -p APP_EXIT="$DO_EXIT" -p APP_ARGS="$SLEEP" -p OSHINKO_DEL_CLUSTER="$DEL_CLUSTER" -p OSHINKO_NAMED_CONFIG=clusterconfig -p OSHINKO_SPARK_DRIVER_CONFIG="$DRIVER_CONFIG" -e TEST_MODE="$DO_TEST"'
+    fi 
+    echo Using cluster name $GEN_CLUSTER_NAME
+    MASTER_DC=$GEN_CLUSTER_NAME-m
+    WORKER_DC=$GEN_CLUSTER_NAME-w
+}
+
+function run_job() {
+    local pod
+    # Launch the app using the service account and create a cluster
+    # Until jobs work with image triggers, we need the full pullspec for an image in a job template
+    set +e
+    SUFFIX=$(date -Ins | md5sum | tr -dc 'a-z0-9' | fold -w 4 | head -n 1)
+    set -e
+    APP_NAME=app-$SUFFIX
+    IMAGE_NAME=$(oc describe is play | sed -rn -e "s@Docker Pull Spec:\s*(.*)@\1@p")
+    if [ "$#" -ne 1 ]; then
+	echo run_job takes 1 parameter, true or false for named or unnamed cluster
+	return 1
+    fi
+    if [ "$1" != true ]; then
+        os::cmd::expect_success 'oc process -f "$PYSPARK_DIR"/sparkjob.json -p IMAGE="$IMAGE_NAME" -p APPLICATION_NAME="$APP_NAME" -p APP_ARGS="$SLEEP" -p OSHINKO_DEL_CLUSTER="$DEL_CLUSTER" | oc create -f -'
+        # Well, we have no easy way of figuring out what the clustername is here since we're not using a dc but if we figure out the pod name we can grep the log
+        # Use the os::cmd_try_until_xxx functions to gate
+        os::cmd::try_until_success 'oc get pod -l job-name="$APP_NAME"'
+        pod=$(oc get pod -l job-name=$APP_NAME --template='{{index .items 0 "metadata" "name"}}')
+        os::cmd::try_until_text 'oc logs "$pod"' "Using.*cluster"
+        GEN_CLUSTER_NAME=$(oc logs $pod | sed -rn "s@Using (shared|ephemeral) cluster (.*$)@\2@p")
+    else
+	# If the cluster name was not cleared, reuse it
+	if [ "$GEN_CLUSTER_NAME" == "" ]; then
+            GEN_CLUSTER_NAME=cl-$SUFFIX
+	fi
+        os::cmd::expect_success 'oc process -f "$PYSPARK_DIR"/sparkjob.json -p IMAGE="$IMAGE_NAME" -p OSHINKO_CLUSTER_NAME="$GEN_CLUSTER_NAME" -p APPLICATION_NAME="$APP_NAME" -p APP_ARGS="$SLEEP" -p OSHINKO_DEL_CLUSTER="$DEL_CLUSTER" | oc create -f -'
+    fi
+    echo Using cluster name $GEN_CLUSTER_NAME
+    MASTER_DC=$GEN_CLUSTER_NAME-m
+    WORKER_DC=$GEN_CLUSTER_NAME-w
+}
+
+function cleanup_app() {
+
+    # We may have code shared by build templates and app templates
+    # that calls cleanup_app, and the build templates may not have dcs ...
+    set +e
+    local test=$(oc get dc "$APP_NAME" &> /dev/null)
+    if [ "$?" -eq 0 ]; then
+        oc delete dc/"$APP_NAME" &> /dev/null
+        os::cmd::try_until_failure 'oc get dc/"$APP_NAME"' $((10*minute))
+        if [ "$#" -eq 1 ]; then
+            local POD_NAME=$1
+            os::cmd::try_until_failure 'oc get pod/"$POD_NAME"' $((10*minute))
+        fi
+    fi
+    set -e
+}
+
+function cleanup_cluster() {
+    # We get tricky here and just use try_until_failure for components that
+    # might not actually exist, depending on what we've been doing
+    # If present, they'll be deleted and the next call will fail
+    os::cmd::try_until_failure 'oc delete service "$GEN_CLUSTER_NAME"-ui' $((5*minute))
+    os::cmd::try_until_failure 'oc delete service "$GEN_CLUSTER_NAME"' $((5*minute))
+    os::cmd::try_until_failure 'oc delete dc "$MASTER_DC"' $((5*minute))
+    os::cmd::try_until_failure 'oc delete dc "$WORKER_DC"' $((5*minute))
+
+#    if [ "$#" -eq 0 ]; then
+#        os::cmd::try_until_failure 'oc get service "$GEN_CLUSTER_NAME"' $((5*minute))
+#        os::cmd::try_until_failure 'oc get service "$GEN_CLUSTER_NAME"-ui' $((5*minute))
+#        os::cmd::try_until_failure 'oc get dc "$MASTER_DC"' $((5*minute))
+#        os::cmd::try_until_failure 'oc get dc "$WORKER_DC"' $((5*minute))
+#    fi
+} 
+
+function poll_build() {
+    local name
+    if [ "$#" -eq 1 ]; then
+	name=$1
+    else
+	name=$APP_NAME
+    fi
+    local tries=0
+    local status
+    local BUILDNUM
+    while true; do
+        BUILDNUM=$(oc get buildconfig $name --template='{{index .status "lastVersion"}}')
+	if [ "$BUILDNUM" == "0" ]; then
+	    # Buildconfig is brand new, lastVersion hasn't been updated yet
+	    status="starting"
+	else
+            status=$(oc get build "$name"-$BUILDNUM --template="{{index .status \"phase\"}}")
+	fi
+	if [ "$status" == "starting" ]; then
+	    echo Build for $name is spinning up, waiting ...
+	    sleep 5
+	elif [ "$status" != "Complete" -a "$status" != "Failed" -a "$status" != "Error" ]; then
+	    echo Build for $name-$BUILDNUM status is $status, waiting ...
+	    sleep 10
+	elif [ "$status" == "Failed" -o "$status" == "Error" ]; then
+	    set +e
+	    oc log buildconfig/$name | grep "Pushing image"
+	    if [ "$?" -eq 0 ]; then
+		tries=$((tries+1))
+		if [ "$tries" -lt 5 ]; then
+		    echo Build failed on push, retrying
+		    sleep 5
+		    oc start-build $name
+		    continue
+		fi
+	    fi
+	    oc log buildconfig/$name | tail -100
+	    set -e
+	    oc delete buildconfig $name
+	    oc delete is $name
+	    set +e
+	    oc delete dc $name
+	    set -e
+	    return 1
+	else
+	    break
+	fi
+    done
+}
+
+function make_image() {
+    local s2i_image
+    if [ "$#" -gt 0 ]; then
+	s2i_image=$1
+    else
+	s2i_image=$S2I_TEST_IMAGE_PYSPARK
+    fi
+    if [ "$#" -gt 1 ]; then
+	git_repo=$2
+    else
+	git_repo=https://github.com/radanalyticsio/s2i-integration-test-apps
+    fi
+    TEST_IMAGE=play
+    set +e
+    oc get buildconfig play &> /dev/null
+    local res=$?
+    set -e
+
+    # If we found the buildconfig for play, then the build
+    # succeeded because we would have deleted it last time in poll_build
+    # if it ultimately failed with retries. So we're good.
+
+    # If not, build it from scratch with retries
+
+    if [ "$res" -ne 0 ]; then
+        # The ip address of an internal/external registry may be set to support running against
+        # an openshift that is not "oc cluster up" when using images that have been built locally.
+        # In the case of "oc cluster up", the docker on the host is available from openshift so
+        # no special pushes of images have to be done.
+        # In the case of a "normal" openshift cluster, a local image we'll use for build has to be
+        # available from the designated registry.
+        # If we're using a pyspark image already in an external registry, openshift can pull it from
+        # there and we don't have to do anything.
+	local user=
+	local password=
+	local pushproj=
+	local pushimage=
+	local registry=
+	local imagestream=
+
+	if [ "$S2I_TEST_LOCAL_IMAGES" == true ]; then
+	    if [ -n  "$S2I_TEST_EXTERNAL_REGISTRY" ]; then
+	        user=$S2I_TEST_EXTERNAL_USER
+	        password=$S2I_TEST_EXTERNAL_PASSWORD
+	        pushproj=$user
+	        pushimage=scratch-$s2i_image
+	        registry=$S2I_TEST_EXTERNAL_REGISTRY
+	        imagestream=false
+
+	    elif [ -n "$S2I_TEST_INTEGRATED_REGISTRY" ]; then
+	        user=$(oc whoami)
+	        password=$(oc whoami -t)
+	        pushproj=$PROJECT
+	        pushimage=scratch-$s2i_image
+	        registry=$S2I_TEST_INTEGRATED_REGISTRY
+	        imagestream=true
+	    fi
+	fi
+
+        if [ -z "$registry" ]; then
+            os::cmd::expect_success 'oc new-build --name=play --docker-image="$s2i_image" "$git_repo"'
+        else
+            set +e
+            docker login --help | grep email &> /dev/null
+            res=$?
+            set -e
+            if [ "$res" -eq 0 ]; then
+                docker login -u ${user} -e jack@jack.com -p ${password} ${registry}
+            else
+                docker login -u ${user} -p ${password} ${registry}
+            fi
+            docker tag ${s2i_image} ${registry}/${pushproj}/${pushimage}
+            docker push ${registry}/${pushproj}/${pushimage}
+	    if [ "$imagestream" == true ]; then
+		os::cmd::expect_success 'oc new-build --name=play --image-stream="$pushimage" "$git_repo"'
+	    else
+		os::cmd::expect_success 'oc new-build --name=play --docker-image="$registry"/"$pushproj"/"$pushimage":latest "$git_repo"'
+	    fi
+        fi
+	poll_build play
+	if [ "$?" -ne 0 ]; then
+	    echo make_image failed, exiting
+	    exit 1
+	fi
+    fi
+}

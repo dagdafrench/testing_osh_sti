@@ -30,15 +30,14 @@ ENV JBOSS_IMAGE_NAME="radanalyticsio/radanalytics-java-spark" \
 # Labels
 LABEL name="$JBOSS_IMAGE_NAME" \
       version="$JBOSS_IMAGE_VERSION" \
-      architecture="x86_64"  \
-      com.redhat.component="radanalyticsio-radanalytics-java-spark-docker"  \
+      architecture="x86_64" \
+      com.redhat.component="radanalyticsio-radanalytics-java-spark-docker" \
       io.k8s.description="Platform for building a radanalytics java spark app" \
       io.k8s.display-name="radanalytics java_spark" \
       io.openshift.expose-services="8080:http" \
       io.openshift.s2i.scripts-url="image:///usr/local/s2i" \
       io.openshift.tags="builder,radanalytics,java_spark" \
-      io.radanalytics.sparkdistro="https://archive.apache.org/dist/spark/spark-2.3.0/spark-2.3.0-bin-hadoop2.7.tgz" \
-      org.concrt.version="1.4.1"
+      io.radanalytics.sparkdistro="https://archive.apache.org/dist/spark/spark-2.3.0/spark-2.3.0-bin-hadoop2.7.tgz"
 
 
 USER root

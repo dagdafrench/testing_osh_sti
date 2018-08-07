@@ -26,14 +26,14 @@ ENV JBOSS_IMAGE_NAME="radanalyticsio/radanalytics-pyspark" \
     SPARK_HOME="/opt/spark" \
     PYTHONPATH="/opt/spark/python" \
     APP_ROOT="/opt/app-root" \
-    APP_FILE="app.py" 
+    APP_LANG="python" 
 
 # Labels
 LABEL name="$JBOSS_IMAGE_NAME" \
       version="$JBOSS_IMAGE_VERSION" \
       architecture="x86_64"  \
       com.redhat.component="radanalyticsio-radanalytics-pyspark-docker"  \
-      io.k8s.description="Platform for building a radanalytics pyspark app" \
+      io.k8s.description="Platform for building a radanalytics Python 2.7 pyspark app" \
       io.k8s.display-name="radanalytics pyspark" \
       io.openshift.expose-services="8080:http" \
       io.openshift.s2i.scripts-url="image:///usr/libexec/s2i" \
@@ -54,7 +54,7 @@ RUN yum install -y  java-1.8.0-openjdk \
 # directory
 COPY \
     spark-2.3.0-bin-hadoop2.7.tgz \
-    oshinko_v0.5.2_linux_amd64.tar.gz \
+    oshinko_v0.5.4_linux_amd64.tar.gz \
     /tmp/artifacts/
 
 # Add scripts used to configure the image
@@ -75,6 +75,6 @@ RUN rm -rf /tmp/artifacts
 USER 185
 
 
-ENTRYPOINT ["/opt/app-root/src/bootstrap.sh"]
+ENTRYPOINT ["/opt/app-root/etc/bootstrap.sh"]
 
 CMD ["/usr/libexec/s2i/usage"]

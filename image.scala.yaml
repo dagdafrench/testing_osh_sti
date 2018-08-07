@@ -26,6 +26,8 @@ envs:
     value: /opt/app-root
   - name: SBT_OPTS
     value: -Dsbt.global.base=/tmp/.sbt/0.13 -Dsbt.ivy.home=/tmp/.ivy2 -Xms512M -Xmx1536M -Xss1M -XX:+CMSClassUnloadingEnabled
+  - name: APP_LANG
+    value: scala
 modules:
   install:
     - name: common
@@ -36,11 +38,11 @@ packages:
 artifacts:
   - url: https://archive.apache.org/dist/spark/spark-2.3.0/spark-2.3.0-bin-hadoop2.7.tgz
     md5: af45eeb06dc1beee6d4c70b92c0e0237
-  - url: https://github.com/radanalyticsio/oshinko-cli/releases/download/v0.5.2/oshinko_v0.5.2_linux_amd64.tar.gz
-    md5: 020c481017e944cc97d05eaf70d75067
+  - url: https://github.com/radanalyticsio/oshinko-cli/releases/download/v0.5.4/oshinko_v0.5.4_linux_amd64.tar.gz
+    md5: e4b6b46f86bef72cc0b99a2d96273472
 run:
   user: 185
   cmd:
     - "/usr/libexec/s2i/usage"
   entrypoint:
-    - "/opt/app-root/src/bootstrap.sh"
+    - "/opt/app-root/etc/bootstrap.sh"

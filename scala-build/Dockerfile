@@ -24,7 +24,8 @@ ENV JBOSS_IMAGE_NAME="radanalytics-scala-spark" \
     PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/spark/bin:/opt/scala/bin:/opt/sbt/bin" \
     SPARK_HOME="/opt/spark" \
     APP_ROOT="/opt/app-root" \
-    SBT_OPTS="-Dsbt.global.base=/tmp/.sbt/0.13 -Dsbt.ivy.home=/tmp/.ivy2 -Xms512M -Xmx1536M -Xss1M -XX:+CMSClassUnloadingEnabled" 
+    SBT_OPTS="-Dsbt.global.base=/tmp/.sbt/0.13 -Dsbt.ivy.home=/tmp/.ivy2 -Xms512M -Xmx1536M -Xss1M -XX:+CMSClassUnloadingEnabled" \
+    APP_LANG="scala" 
 
 # Labels
 LABEL name="$JBOSS_IMAGE_NAME" \
@@ -52,7 +53,7 @@ RUN yum install -y  git \
 # directory
 COPY \
     spark-2.3.0-bin-hadoop2.7.tgz \
-    oshinko_v0.5.2_linux_amd64.tar.gz \
+    oshinko_v0.5.4_linux_amd64.tar.gz \
     /tmp/artifacts/
 
 # Add scripts used to configure the image
@@ -73,6 +74,6 @@ RUN rm -rf /tmp/artifacts
 USER 185
 
 
-ENTRYPOINT ["/opt/app-root/src/bootstrap.sh"]
+ENTRYPOINT ["/opt/app-root/etc/bootstrap.sh"]
 
 CMD ["/usr/libexec/s2i/usage"]

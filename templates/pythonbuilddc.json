@@ -5,7 +5,7 @@
       "name": "oshinko-python-spark-build-dc",
       "annotations": {
          "openshift.io/display-name": "Apache Spark Python",
-         "description": "Create a buildconfig, imagestream and deploymentconfig using source-to-image and Python Spark source files hosted in git"
+         "description": "Create a buildconfig, imagestream and deploymentconfig using source-to-image and Python 2.7 Spark source files hosted in git"
       }
    },
    "labels": {
@@ -200,6 +200,10 @@
                         "name": "${APPLICATION_NAME}",
                         "image": "${APPLICATION_NAME}",
                         "env": [
+                           {
+                              "name": "APPLICATION_NAME",
+                              "value": "${APPLICATION_NAME}"
+                           },
                            {
                               "name": "DRIVER_HOST",
                               "value": "${APPLICATION_NAME}-headless"

@@ -16,7 +16,7 @@
 #
 # This is a Dockerfile for the radanalyticsio/radanalytics-java-spark:1.0 image.
 
-FROM fabric8/s2i-java:latest
+FROM fabric8/s2i-java:2.2.0
 
 # Environment variables
 ENV JBOSS_IMAGE_NAME="radanalyticsio/radanalytics-java-spark" \
@@ -25,7 +25,8 @@ ENV JBOSS_IMAGE_NAME="radanalyticsio/radanalytics-java-spark" \
     PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/spark/bin" \
     SPARK_HOME="/opt/spark" \
     APP_ROOT="/opt/app-root" \
-    STI_SCRIPTS_PATH="/usr/local/s2i" 
+    STI_SCRIPTS_PATH="/usr/local/s2i" \
+    APP_LANG="java" 
 
 # Labels
 LABEL name="$JBOSS_IMAGE_NAME" \
@@ -53,7 +54,7 @@ RUN yum install -y  epel-release tar wget \
 # directory
 COPY \
     spark-2.3.0-bin-hadoop2.7.tgz \
-    oshinko_v0.5.2_linux_amd64.tar.gz \
+    oshinko_v0.5.4_linux_amd64.tar.gz \
     /tmp/artifacts/
 
 # Add scripts used to configure the image
@@ -74,6 +75,6 @@ RUN rm -rf /tmp/artifacts
 USER 185
 
 
-ENTRYPOINT ["/opt/app-root/src/bootstrap.sh"]
+ENTRYPOINT ["/opt/app-root/etc/bootstrap.sh"]
 
 CMD ["/usr/local/s2i/usage"]

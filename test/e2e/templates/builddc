@@ -228,6 +228,17 @@ function test_no_app_name {
     os::cmd::expect_success 'oc delete dc "$NAME"'
 }
 
+function dc_test_no_app_name {
+    set_defaults
+    os::cmd::expect_success 'oc delete dc --all'
+    os::cmd::try_until_text 'oc get pod -l deploymentconfig' 'No resources found'
+    run_app_without_application_name
+    os::cmd::try_until_not_text 'oc get pod -l deploymentconfig' 'No resources found' $((10*minute))
+    DRIVER=$(oc get pod -l deploymentconfig --template='{{index .items 0 "metadata" "name"}}')
+    os::cmd::try_until_text 'oc logs "$DRIVER"' 'cluster'
+    os::cmd::expect_success 'oc delete dc --all'
+}
+
 function test_app_args {
     set_defaults
     APPARGS="doodleydoodley"
@@ -245,6 +256,13 @@ function test_podinfo {
     run_app
     os::cmd::try_until_success 'oc exec "$DRIVER" -- ls /etc/podinfo/labels'
     os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep POD_NAME="$DRIVER"'  $((5*minute))
+    cleanup_app $DRIVER
+}
+
+function test_run_complete {
+    set_defaults
+    run_app
+    os::cmd::try_until_text 'oc logs "$DRIVER"' 'test app completed'
     cleanup_app $DRIVER
 }
 
@@ -309,6 +327,18 @@ function test_app_file {
     set_app_file $1
     run_app
     os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep APP_FILE="$APP_FILE_NAME"$' $((10*minute))
+    cleanup_app $DRIVER
+    oc delete buildconfig $APP_NAME &> /dev/null
+    oc delete is $APP_NAME &> /dev/null
+}
+
+function test_manifest_file {
+    set_defaults
+    local main_class=$APP_MAIN_CLASS
+    set_app_main_class
+    run_app
+    set_app_main_class $main_class
+    os::cmd::try_until_text 'oc logs "$DRIVER"' '\-\-class com.mycompany.app.JavaSparkPi' $((10*minute))
     cleanup_app $DRIVER
     oc delete buildconfig $APP_NAME &> /dev/null
     oc delete is $APP_NAME &> /dev/null
@@ -425,6 +455,14 @@ function test_context_dir {
     cleanup_app
     os::cmd::expect_success 'oc delete buildconfig "$APP_NAME"'
     os::cmd::expect_success 'oc delete is "$APP_NAME"'
+}
+
+function test_app_lang {
+    local applang=$1
+    set_defaults
+    run_app
+    os::cmd::try_until_success 'oc exec "$DRIVER" -- env | grep APP_LANG="$applang"'  $((5*minute))
+    cleanup_app $DRIVER
 }
 
 function fix_template() {

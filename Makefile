@@ -1,15 +1,19 @@
-allimgs =  Makefile.pyspark Makefile.java Makefile.scala
+allimgs =  Makefile.pyspark Makefile.pyspark-py36 Makefile.java Makefile.scala Makefile.sparklyr
 
 # Set the S2I_TEST_IMAGE_XXX env vars so that the
 # build of the local images and the tests use the
 # same image name when running the test targets
 S2I_TEST_IMAGE_PREFIX ?= s2i-testimage
 S2I_TEST_IMAGE_PYSPARK ?= $(S2I_TEST_IMAGE_PREFIX)-pyspark
+S2I_TEST_IMAGE_PYSPARK_PY36 ?= $(S2I_TEST_IMAGE_PREFIX)-pyspark-py36
 S2I_TEST_IMAGE_JAVA ?= $(S2I_TEST_IMAGE_PREFIX)-java
 S2I_TEST_IMAGE_SCALA ?= $(S2I_TEST_IMAGE_PREFIX)-scala
+S2I_TEST_IMAGE_SPARKLYR ?= $(S2I_TEST_IMAGE_PREFIX)-sparklyr
 export S2I_TEST_IMAGE_PYSPARK
+export S2I_TEST_IMAGE_PYSPARK_PY36
 export S2I_TEST_IMAGE_JAVA
 export S2I_TEST_IMAGE_SCALA
+export S2I_TEST_IMAGE_SPARKLYR
 
 build: CMD=build
 push: CMD=push
@@ -35,7 +39,7 @@ $(allimgs):
 # with 'oc cluster up'
 test-ephemeral:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK) make -f Makefile.pyspark build
-	test/e2e/run.sh "(ephemeral|incomplete)"
+	test/e2e/run.sh ephemeral/
 
 test-java-templates:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_JAVA) make -f Makefile.java build
@@ -47,11 +51,15 @@ test-java-radio:
 
 test-pyspark-templates:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK) make -f Makefile.pyspark build
-	test/e2e/run.sh templates/pyspark
+	test/e2e/run.sh templates/pyspark-py27
 
 test-pyspark-radio:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK) make -f Makefile.pyspark build
-	test/e2e/run.sh templates/pyspark/radio
+	test/e2e/run.sh templates/pyspark-py27/radio
+
+test-pyspark-py36-templates:
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK_PY36) make -f Makefile.pyspark-py36 build
+	test/e2e/run.sh templates/pyspark-py36
 
 test-scala-templates:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SCALA) make -f Makefile.scala build
@@ -67,10 +75,23 @@ test-scala-dc:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SCALA) make -f Makefile.scala build
 	test/e2e/run.sh "(templates/scala/build|templates/scala/dc)"
 
+test-sparklyr-dc:
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SPARKLYR) make -f Makefile.sparklyr build
+	test/e2e/run.sh templates/sparklyr/dc/
+
+test-sparklyr-build:
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SPARKLYR) make -f Makefile.sparklyr build
+	test/e2e/run.sh templates/sparklyr/build/
+
+test-sparklyr-builddc:
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SPARKLYR) make -f Makefile.sparklyr build
+	test/e2e/run.sh templates/sparklyr/builddc/
+
 test-templates:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK) make -f Makefile.pyspark build
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_JAVA) make -f Makefile.java build
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SCALA) make -f Makefile.scala build
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SPARKLYR) make -f Makefile.sparklyr build
 	test/e2e/run.sh templates
 
 test-operations:
@@ -85,6 +106,7 @@ test-e2e:
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_PYSPARK) make -f Makefile.pyspark build
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_JAVA) make -f Makefile.java build
 	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SCALA) make -f Makefile.scala build
+	LOCAL_IMAGE=$(S2I_TEST_IMAGE_SPARKLYR) make -f Makefile.sparklyr build
 	test/e2e/run.sh
 
-.PHONY: build clean push $(allimgs) test-e2e test-ephemeral test-java-templates test-pyspark-templates test-scala-templates test-templates test-pyspark-radio test-scala-radio test-java-radio
+.PHONY: build clean push $(allimgs) test-e2e test-ephemeral test-java-templates test-pyspark-templates test-pyspark-py36-templates test-scala-templates test-templates test-pyspark-radio test-scala-radio test-java-radio

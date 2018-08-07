@@ -23,26 +23,15 @@ function poll_build() {
     return
 }
 
-function test_no_app_name {
-    set_defaults
-    os::cmd::expect_success 'oc delete dc --all'
-    os::cmd::try_until_text 'oc get pod -l deploymentconfig' 'No resources found'
-    run_app_without_application_name
-    os::cmd::try_until_not_text 'oc get pod -l deploymentconfig' 'No resources found' $((10*minute))
-    DRIVER=$(oc get pod -l deploymentconfig --template='{{index .items 0 "metadata" "name"}}')
-    os::cmd::try_until_text 'oc logs "$DRIVER"' 'cluster'
-    os::cmd::expect_success 'oc delete dc --all'
-}
-
 set_git_uri https://github.com/radanalyticsio/s2i-integration-test-apps
-set_app_main_class org.apache.spark.examples.JavaSparkPi
+set_app_main_class com.mycompany.app.JavaSparkPi
 
 # Make the S2I test image if it's not already in the project
 make_image $S2I_TEST_IMAGE_JAVA $GIT_URI
 set_image $TEST_IMAGE
 
-echo "++ test_no_app_name"
-test_no_app_name
+echo "++ dc_test_no_app_name"
+dc_test_no_app_name
 
 echo "++ test_exit"
 test_exit
